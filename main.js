@@ -23,6 +23,16 @@ let collisionCooldown = false;
 // Partículas de explosión de rocas
 let rockExplosions = [];
 
+// Velocidad y aceleración hacia adelante
+let forwardSpeed = 0.06;
+let maxForwardSpeed = 0.24;
+let forwardAcceleration = 0.0002; // incremento por frame aprox 60fps
+
+// Puntuación
+let score = 0;
+let scoreEl = null;
+let winEl = null;
+
 // Inicialización
 init();
 animate();
@@ -79,7 +89,7 @@ function createObstacles() {
     obstacles = [];
     
     // Crear varios obstáculos
-    const numObstacles = 15;
+    const numObstacles = 80;
     
     for (let i = 0; i < numObstacles; i++) {
         // Geometría y material para los obstáculos (rocas)
@@ -92,15 +102,20 @@ function createObstacles() {
         
         const obstacle = new THREE.Mesh(obstacleGeometry, obstacleMaterial);
         
-        // Posicionar aleatoriamente en el agua
-        obstacle.position.x = Math.random() * 40 - 20;
+        // Posicionar por delante del jugador en dirección de avance (z decreciente)
+        // Expandir en todo el ancho visible
+        obstacle.position.x = (Math.random() * 44) - 22; // ~pantalla completa, coincide con límites de movimiento
         obstacle.position.y = 0;
-        obstacle.position.z = Math.random() * 100 - 50;
+        const baseZ = surfboard ? surfboard.position.z : 0;
+        obstacle.position.z = baseZ - (Math.random() * 1000 + 80); // campo largo: 80 a 1080 por delante (más negativo)
         
         // Añadir a la escena y al array de obstáculos
         scene.add(obstacle);
         obstacles.push(obstacle);
     }
+    // UI
+    scoreEl = document.getElementById('score');
+    winEl = document.getElementById('win');
 }
 
 function createWater() {
@@ -322,6 +337,8 @@ function animate() {
     
     // Mover el surfista y la tabla
     if (surfboard) {
+        // Acelerar suavemente hasta un máximo
+        forwardSpeed = Math.min(maxForwardSpeed, forwardSpeed + forwardAcceleration);
         surfboard.rotation.z = -targetX * 0.2; // Inclinación lateral
         // Mantener la tabla acostada (base -PI/2) y sumar inclinación suave
         surfboard.rotation.x = -Math.PI / 2 - targetY * 0.1; // Inclinación frontal
@@ -332,15 +349,10 @@ function animate() {
         // Limitar el movimiento para que no se salga demasiado
         surfboard.position.x = Math.max(-20, Math.min(20, surfboard.position.x));
         
-        // Movimiento hacia adelante constante
-        surfboard.position.z -= 0.05;
+        // Movimiento hacia adelante con aceleración
+        surfboard.position.z -= forwardSpeed;
         
-        // Reiniciar posición cuando se aleja demasiado
-        if (surfboard.position.z < -50) {
-            surfboard.position.z = 50;
-            // Regenerar obstáculos cuando se reinicia la posición
-            createObstacles();
-        }
+        // Ya no reiniciamos la posición: el campo de rocas es largo y reciclable
         
         // Detectar colisiones con obstáculos
         checkCollisions();
@@ -395,6 +407,16 @@ function animate() {
             }
         }
     }
+
+    // Reposicionar obstáculos que queden demasiado atrás (más positivos) moviéndolos muy adelante (más negativos)
+    for (let i = 0; i < obstacles.length; i++) {
+        const obstacle = obstacles[i];
+        if (obstacle.position.z > surfboard.position.z + 60) {
+            // Reaparecer muy adelante y en todo el ancho
+            obstacle.position.x = (Math.random() * 44) - 22;
+            obstacle.position.z = surfboard.position.z - (Math.random() * 900 + 200);
+        }
+    }
     
     renderer.render(scene, camera);
 }
@@ -432,6 +454,17 @@ function checkCollisions() {
                 }
                 setTimeout(() => { collisionCooldown = false; }, 250);
             }
+
+            // Puntuación y victoria
+            score += 1;
+            if (scoreEl) {
+                scoreEl.textContent = `Puntos: ${score} / 100`;
+            }
+            if (score >= 100 && !gameOver) {
+                gameOver = true;
+                if (winEl) winEl.style.display = 'block';
+            }
+
             break;
         }
     }
