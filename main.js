@@ -6,6 +6,8 @@ import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 let scene, camera, renderer;
 let surfboard, surfer;
 let water, sky;
+let island;
+let stars;
 let mouseX = 0, mouseY = 0;
 let targetX = 0, targetY = 0;
 let windowHalfX = window.innerWidth / 2;
@@ -67,11 +69,16 @@ function init() {
     // Crear cielo
     createSky();
     
+    // Crear isla en el horizonte
+    createIsland();
+
     // Crear surfista y tabla
     createSurferAndBoard();
     
     // Crear obstáculos
     createObstacles();
+    // Ajustar materiales de rocas actuales para que brillen
+    makeObstaclesShiny();
     
     // Event listeners
     document.addEventListener('mousemove', onDocumentMouseMove);
@@ -95,9 +102,10 @@ function createObstacles() {
         // Geometría y material para los obstáculos (rocas)
         const obstacleGeometry = new THREE.IcosahedronGeometry(Math.random() * 0.5 + 0.5, 0);
         const obstacleMaterial = new THREE.MeshStandardMaterial({ 
-            color: 0x555555,
-            roughness: 0.8,
-            metalness: 0.2
+            color: 0xE6EEF7, // casi blanco azulado
+            roughness: 0.25,
+            metalness: 0.5,
+            envMapIntensity: 0.8
         });
         
         const obstacle = new THREE.Mesh(obstacleGeometry, obstacleMaterial);
@@ -119,55 +127,120 @@ function createObstacles() {
 }
 
 function createWater() {
-    // Geometría plana para el agua
-    const waterGeometry = new THREE.PlaneGeometry(400, 400, 64, 64);
-    
-    // Material para el agua con efecto de ondas
-    const waterMaterial = new THREE.MeshStandardMaterial({
-        color: 0x0077be,
-        metalness: 0.1,
-        roughness: 0.3,
-        side: THREE.DoubleSide,
-        transparent: true,
-        opacity: 0.8
+    // Geometría para el agua (alta resolución para desplazamiento suave)
+    const waterGeometry = new THREE.PlaneGeometry(400, 400, 200, 200);
+
+    // Paleta inspirada en Hokusai: azul profundo, azul claro, espuma marfil
+    const baseDeep = new THREE.Color(0x2d6fa3); // azul medio claro
+    const baseLight = new THREE.Color(0x6fb3e6); // azul claro luminoso
+    const foam = new THREE.Color(0xf4f1e6); // marfil suave
+
+    const uniforms = {
+        uTime: { value: 0 },
+        uBaseDeep: { value: baseDeep },
+        uBaseLight: { value: baseLight },
+        uFoam: { value: foam },
+        uScale: { value: 0.8 },
+        uSpeed: { value: 0.25 }
+    };
+
+    const vertexShader = `
+        uniform float uTime;
+        uniform float uScale;
+        uniform float uSpeed;
+        varying float vHeight;
+        varying vec2 vUv;
+        
+        // ondas combinadas tipo ukiyo-e
+        float wave(vec2 p, float f, float a) {
+            return sin(p.x * f + uTime * uSpeed) * a + cos(p.y * f * 0.7 + uTime * uSpeed * 1.2) * a * 0.7;
+        }
+        
+        void main() {
+            vUv = uv;
+            vec3 pos = position;
+            vec2 p = position.xz * uScale * 0.6;
+            float h = 0.0;
+            h += wave(p, 0.7, 0.15);
+            h += wave(p * 1.7, 1.8, 0.06);
+            h += wave(p * 3.1, 3.2, 0.02);
+            pos.z += h; // pequeña elevación vertical en el plano XZ (plano está rotado posteriormente)
+            vHeight = h;
+            gl_Position = projectionMatrix * modelViewMatrix * vec4(pos, 1.0);
+        }
+    `;
+
+    const fragmentShader = `
+        precision highp float;
+        varying float vHeight;
+        varying vec2 vUv;
+        uniform vec3 uBaseDeep;
+        uniform vec3 uBaseLight;
+        uniform vec3 uFoam;
+        
+        void main() {
+            // Mezcla por altura con menor contraste
+            float h = clamp((vHeight + 0.18) * 1.3, 0.0, 1.0);
+            vec3 base = mix(uBaseDeep, uBaseLight, h);
+            
+            // Espuma más sutil
+            float stripes = smoothstep(0.88, 0.96, h) * 0.6 + smoothstep(0.58, 0.64, h) * 0.3;
+            stripes = clamp(stripes, 0.0, 0.6);
+            vec3 color = mix(base, uFoam, stripes * 0.35);
+            
+            // Grano muy leve
+            float grain = fract(sin(dot(vUv * 320.0, vec2(12.9898,78.233))) * 43758.5453);
+            color *= (0.99 + grain * 0.01);
+            
+            gl_FragColor = vec4(color, 1.0);
+        }
+    `;
+
+    const waterMaterial = new THREE.ShaderMaterial({
+        uniforms,
+        vertexShader,
+        fragmentShader,
+        side: THREE.DoubleSide
     });
-    
+
     water = new THREE.Mesh(waterGeometry, waterMaterial);
     water.rotation.x = -Math.PI / 2;
     water.position.y = -0.5;
     scene.add(water);
-    
-    // Animación de ondas para el agua
-    const vertices = water.geometry.attributes.position.array;
-    const waves = [];
-    
-    for (let i = 0; i < vertices.length / 3; i++) {
-        waves.push({
-            x: vertices[i * 3],
-            y: vertices[i * 3 + 1],
-            z: vertices[i * 3 + 2],
-            ang: Math.random() * Math.PI * 2,
-            amp: 0.1 + Math.random() * 0.1,
-            speed: 0.05 + Math.random() * 0.05
-        });
-    }
-    
-    water.userData.waves = waves;
+    water.userData.uniforms = uniforms;
 }
 
 function createSky() {
-    // Fondo de cielo simple
-    scene.background = new THREE.Color(0x87ceeb);
+    // Cielo nocturno oscuro
+    scene.background = new THREE.Color(0x02060d);
     
     // Geometría para el horizonte
-    const skyGeometry = new THREE.SphereGeometry(500, 32, 32);
-    const skyMaterial = new THREE.MeshBasicMaterial({
-        color: 0x87ceeb,
-        side: THREE.BackSide
-    });
+    const skyGeometry = new THREE.SphereGeometry(1000, 32, 32);
+    const skyMaterial = new THREE.MeshBasicMaterial({ color: 0x02060d, side: THREE.BackSide });
     
     sky = new THREE.Mesh(skyGeometry, skyMaterial);
     scene.add(sky);
+
+    // Estrellas
+    const starCount = 1500;
+    const starPositions = new Float32Array(starCount * 3);
+    for (let i = 0; i < starCount; i++) {
+        // puntos aleatorios en una cúpula amplia
+        const r = 900;
+        const theta = Math.random() * Math.PI * 2;
+        const phi = Math.acos(THREE.MathUtils.randFloat(-0.1, 1)); // favorecer cúpula superior
+        const x = r * Math.sin(phi) * Math.cos(theta);
+        const y = r * Math.cos(phi);
+        const z = r * Math.sin(phi) * Math.sin(theta);
+        starPositions[i * 3] = x;
+        starPositions[i * 3 + 1] = y;
+        starPositions[i * 3 + 2] = z;
+    }
+    const starGeo = new THREE.BufferGeometry();
+    starGeo.setAttribute('position', new THREE.BufferAttribute(starPositions, 3));
+    const starMat = new THREE.PointsMaterial({ color: 0xffffff, size: 1.0, sizeAttenuation: true, depthWrite: false });
+    stars = new THREE.Points(starGeo, starMat);
+    sky.add(stars);
 }
 
 function createSurferAndBoard() {
@@ -179,84 +252,88 @@ function createSurferAndBoard() {
     surfboard.position.y = 0;
     scene.add(surfboard);
     
-    // Crear delfín (en lugar del surfista) - Color rosa
-    const dolphinColor = 0xFF69B4; // Rosa (Hot Pink)
-    
-    // Cuerpo principal del delfín
-    const bodyGeometry = new THREE.CapsuleGeometry(0.3, 1.2, 8, 16);
-    const bodyMaterial = new THREE.MeshStandardMaterial({ color: dolphinColor });
-    const body = new THREE.Mesh(bodyGeometry, bodyMaterial);
-    body.position.y = 0.6;
-    body.rotation.x = Math.PI / 8; // Inclinar ligeramente el cuerpo
-    
-    // Cabeza del delfín
-    const headGeometry = new THREE.SphereGeometry(0.3, 16, 16);
-    const headMaterial = new THREE.MeshStandardMaterial({ color: dolphinColor });
-    const head = new THREE.Mesh(headGeometry, headMaterial);
-    head.position.set(0, 0.9, 0.4);
-    head.scale.set(1, 0.8, 1.2); // Estirar para forma de delfín
-    
-    // Hocico del delfín
-    const snoutGeometry = new THREE.ConeGeometry(0.15, 0.5, 16);
-    const snoutMaterial = new THREE.MeshStandardMaterial({ color: dolphinColor });
-    const snout = new THREE.Mesh(snoutGeometry, snoutMaterial);
-    snout.position.set(0, 0.8, 0.8);
-    snout.rotation.x = -Math.PI / 2; // Rotar para que apunte hacia adelante
-    
-    // Aleta dorsal
-    const finGeometry = new THREE.ConeGeometry(0.2, 0.4, 4);
-    const finMaterial = new THREE.MeshStandardMaterial({ color: dolphinColor });
-    const dorsalFin = new THREE.Mesh(finGeometry, finMaterial);
-    dorsalFin.position.set(0, 0.9, 0);
-    dorsalFin.rotation.x = Math.PI / 8; // Inclinar ligeramente
-    
-    // Aletas laterales
-    const sideFinsGeometry = new THREE.ConeGeometry(0.1, 0.4, 8);
-    const sideFinsMaterial = new THREE.MeshStandardMaterial({ color: dolphinColor });
-    
-    const leftFin = new THREE.Mesh(sideFinsGeometry, sideFinsMaterial);
-    leftFin.position.set(-0.3, 0.5, 0);
-    leftFin.rotation.z = -Math.PI / 2;
-    leftFin.rotation.y = -Math.PI / 8;
-    
-    const rightFin = new THREE.Mesh(sideFinsGeometry, sideFinsMaterial);
-    rightFin.position.set(0.3, 0.5, 0);
-    rightFin.rotation.z = Math.PI / 2;
-    rightFin.rotation.y = Math.PI / 8;
-    
-    // Cola del delfín
-    const tailGeometry = new THREE.BoxGeometry(0.6, 0.1, 0.3);
-    const tailMaterial = new THREE.MeshStandardMaterial({ color: dolphinColor });
-    const tail = new THREE.Mesh(tailGeometry, tailMaterial);
-    tail.position.set(0, 0.5, -0.6);
-    tail.rotation.x = -Math.PI / 8;
-    
-    // Ojos
-    const eyeGeometry = new THREE.SphereGeometry(0.05, 8, 8);
-    const eyeMaterial = new THREE.MeshStandardMaterial({ color: 0x000000 });
-    
-    const leftEye = new THREE.Mesh(eyeGeometry, eyeMaterial);
-    leftEye.position.set(-0.15, 0.9, 0.6);
-    
-    const rightEye = new THREE.Mesh(eyeGeometry, eyeMaterial);
-    rightEye.position.set(0.15, 0.9, 0.6);
-    
-    // Agrupar todo el delfín
+    // Surfer humano low-poly
+    const skinColor = 0xC68642; // piel marrón clara
+    const shirtColor = 0xFF69B4; // rosa
+    const shortColor = 0x2c5f92; // azul del mar
+    const hairColor = 0x3a2f2f;
+
     surfer = new THREE.Group();
-    surfer.add(body);
-    surfer.add(head);
-    surfer.add(snout);
-    surfer.add(dorsalFin);
-    surfer.add(leftFin);
-    surfer.add(rightFin);
-    surfer.add(tail);
+
+    // Torso
+    const torso = new THREE.Mesh(
+        new THREE.CapsuleGeometry(0.22, 0.6, 8, 12),
+        new THREE.MeshStandardMaterial({ color: shirtColor })
+    );
+    torso.position.set(0, 0.6, 0);
+    surfer.add(torso);
+
+    // Cabeza
+    const humanHead = new THREE.Mesh(
+        new THREE.SphereGeometry(0.18, 16, 16),
+        new THREE.MeshStandardMaterial({ color: skinColor })
+    );
+    humanHead.position.set(0, 1.05, 0.05);
+    surfer.add(humanHead);
+
+    // Pelo
+    const hair = new THREE.Mesh(
+        new THREE.SphereGeometry(0.19, 12, 12, 0, Math.PI * 2, 0, Math.PI / 2),
+        new THREE.MeshStandardMaterial({ color: hairColor })
+    );
+    hair.position.copy(humanHead.position);
+    surfer.add(hair);
+
+    // Brazos
+    const armGeo = new THREE.CapsuleGeometry(0.07, 0.35, 6, 10);
+    const armMat = new THREE.MeshStandardMaterial({ color: skinColor });
+    const leftArm = new THREE.Mesh(armGeo, armMat);
+    leftArm.position.set(-0.28, 0.75, 0);
+    leftArm.rotation.z = Math.PI / 2; // T-pose: brazo horizontal
+    surfer.add(leftArm);
+    const rightArm = new THREE.Mesh(armGeo, armMat);
+    rightArm.position.set(0.28, 0.75, 0);
+    rightArm.rotation.z = -Math.PI / 2; // T-pose: brazo horizontal
+    surfer.add(rightArm);
+
+    // Cintura/shorts
+    const hips = new THREE.Mesh(
+        new THREE.BoxGeometry(0.34, 0.2, 0.2),
+        new THREE.MeshStandardMaterial({ color: shortColor })
+    );
+    hips.position.set(0, 0.38, 0);
+    surfer.add(hips);
+
+    // Piernas
+    const legGeo = new THREE.CapsuleGeometry(0.09, 0.4, 6, 10);
+    const legMat = new THREE.MeshStandardMaterial({ color: skinColor });
+    const leftLeg = new THREE.Mesh(legGeo, legMat);
+    leftLeg.position.set(-0.11, 0.15, 0);
+    leftLeg.rotation.x = 0;
+    surfer.add(leftLeg);
+    const rightLeg = new THREE.Mesh(legGeo, legMat);
+    rightLeg.position.set(0.11, 0.15, 0);
+    rightLeg.rotation.x = 0;
+    surfer.add(rightLeg);
+
+    // Ojos
+    const eyeGeometry = new THREE.SphereGeometry(0.03, 8, 8);
+    const eyeMaterial = new THREE.MeshStandardMaterial({ color: 0x2b2b2b });
+    const leftEye = new THREE.Mesh(eyeGeometry, eyeMaterial);
+    leftEye.position.set(-0.06, 1.08, 0.16);
+    const rightEye = new THREE.Mesh(eyeGeometry, eyeMaterial);
+    rightEye.position.set(0.06, 1.08, 0.16);
     surfer.add(leftEye);
     surfer.add(rightEye);
+
+    // Guardar referencias para animación sutil de la pose
+    surfer.userData.parts = { torso, leftArm, rightArm, leftLeg, rightLeg };
     
-    // Posicionar el delfín sobre la tabla
+    // Posicionar el surfer sobre la tabla y mantenerlo vertical
     surfer.position.y = 0.2;
-    surfer.position.z = 0.3;
-    surfer.scale.set(0.8, 0.8, 0.8); // Ajustar tamaño para que se vea mejor en la tabla
+    surfer.position.z = 0.15;
+    surfer.rotation.x = Math.PI / 2; // contrarrestar la rotación de la tabla
+    surfer.scale.set(0.95, 0.95, 0.95);
     surfboard.add(surfer);
 }
 
@@ -356,20 +433,32 @@ function animate() {
         
         // Detectar colisiones con obstáculos
         checkCollisions();
+
+        // Animación sutil del cuerpo según inclinación
+        if (surfer && surfer.userData.parts) {
+            const { torso, leftArm, rightArm, leftLeg, rightLeg } = surfer.userData.parts;
+            const lean = THREE.MathUtils.clamp(surfboard.rotation.z, -0.4, 0.4);
+            const kneeBend = Math.abs(lean) * 0.15; // doblar rodillas según giro
+            const armCounter = -lean * 0.5; // contrapeso de brazos
+
+            torso.rotation.z = lean * 0.3;
+            leftLeg.rotation.x = kneeBend;
+            rightLeg.rotation.x = kneeBend;
+            leftArm.rotation.y = armCounter;
+            rightArm.rotation.y = armCounter;
+        }
     }
     
-    // Animar las olas
-    if (water && water.userData.waves) {
-        const waves = water.userData.waves;
-        const vertices = water.geometry.attributes.position.array;
-        
-        for (let i = 0; i < waves.length; i++) {
-            const wave = waves[i];
-            wave.ang += wave.speed;
-            vertices[i * 3 + 2] = wave.z + Math.sin(wave.ang) * wave.amp;
-        }
-        
-        water.geometry.attributes.position.needsUpdate = true;
+    // Animar el shader del agua
+    if (water && water.userData.uniforms) {
+        water.userData.uniforms.uTime.value += 0.016;
+    }
+    
+    // Mantener la isla en el horizonte por delante del jugador
+    if (island && surfboard) {
+        island.position.x = 0; // centrada
+        island.position.z = surfboard.position.z - 220; // horizonte lejano
+        island.position.y = -0.35; // casi a nivel del agua
     }
     
     // Actualizar la cámara para seguir al surfista
@@ -383,6 +472,11 @@ function animate() {
         camera.position.x = surfboard.position.x;
         camera.position.z = surfboard.position.z + 10;
         camera.lookAt(surfboard.position);
+
+        // Mantener el cielo alrededor de la cámara para que las estrellas parezcan lejanas
+        if (sky) {
+            sky.position.copy(camera.position);
+        }
     }
 
     // Actualizar explosiones de rocas
@@ -466,6 +560,66 @@ function checkCollisions() {
             }
 
             break;
+        }
+    }
+}
+
+function createIsland() {
+    island = new THREE.Group();
+
+    // Arena: montículo bajo y ancho
+    const sandMat = new THREE.MeshStandardMaterial({ color: 0xEED6A4, roughness: 1.0, metalness: 0.0 });
+    const sand = new THREE.Mesh(new THREE.CylinderGeometry(10, 14, 0.6, 32), sandMat);
+    sand.rotation.x = 0;
+    sand.position.set(0, -0.3, 0);
+    island.add(sand);
+
+    // Palmas: varias con alturas y orientaciones ligeramente distintas
+    const trunkMat = new THREE.MeshStandardMaterial({ color: 0x8B5A2B, roughness: 0.9 });
+    const leafMat = new THREE.MeshStandardMaterial({ color: 0x2F8F2F, roughness: 0.8 });
+
+    function addPalm(px, pz, height) {
+        const trunk = new THREE.Mesh(new THREE.CylinderGeometry(0.12, 0.18, height, 8), trunkMat);
+        trunk.position.set(px, -0.3 + height / 2, pz);
+        trunk.rotation.z = (Math.random() - 0.5) * 0.15; // leve inclinación
+        island.add(trunk);
+
+        const crownY = trunk.position.y + height / 2;
+        // Hojas: conos planos alrededor
+        const leafGeo = new THREE.ConeGeometry(1.6, 0.3, 10);
+        for (let i = 0; i < 6; i++) {
+            const leaf = new THREE.Mesh(leafGeo, leafMat);
+            leaf.position.set(px, crownY, pz);
+            leaf.rotation.x = -Math.PI / 2;
+            leaf.rotation.z = (i / 6) * Math.PI * 2;
+            island.add(leaf);
+        }
+    }
+
+    // Palmar extendido izquierda a derecha
+    const rows = 2;
+    const cols = 9;
+    for (let r = 0; r < rows; r++) {
+        for (let c = 0; c < cols; c++) {
+            const t = c / (cols - 1);
+            const x = -6 + t * 12 + (Math.random() - 0.5) * 0.8; // de -6 a 6 aprox
+            const z = (r === 0 ? 0.8 : -0.6) + (Math.random() - 0.5) * 0.6;
+            const h = 2.4 + Math.random() * 2.0;
+            addPalm(x, z, h);
+        }
+    }
+
+    scene.add(island);
+}
+
+function makeObstaclesShiny() {
+    for (let i = 0; i < obstacles.length; i++) {
+        const o = obstacles[i];
+        if (o.material && o.material.isMeshStandardMaterial) {
+            o.material.color.set(0xE6EEF7);
+            o.material.roughness = 0.25;
+            o.material.metalness = 0.5;
+            o.material.envMapIntensity = 0.8;
         }
     }
 }
